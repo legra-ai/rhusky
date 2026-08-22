@@ -19,10 +19,12 @@
 //! Create a `build.rs` file:
 //!
 //! ```rust,ignore
-//! fn main() {
+//! #[tokio::main]
+//! async fn main() {
 //!     rhusky::Rhusky::new()
 //!         .hooks_dir(".githooks")
 //!         .install()
+//!         .await
 //!         .ok();
 //! }
 //! ```
@@ -40,7 +42,7 @@
 //! - **Truly idempotent**: Never overwrites existing hooks
 //! - **No magic**: Just sets `core.hooksPath` in git config
 //! - **CI-aware**: Skips installation in CI environments
-//! - **Zero dependencies**: Pure Rust, no external crates
+//! - **Async filesystem access**: Filesystem operations use `async-fs-io`
 
 use std::path::{
     Path,
@@ -49,8 +51,15 @@ use std::path::{
 use std::process::Command;
 use std::{
     env,
-    fs,
     io,
+};
+
+use async_fs_io::{
+    ensure_dir,
+    set_permissions,
+    symlink_metadata,
+    try_exists,
+    write_bytes,
 };
 
 /// Builder for configuring and installing git hooks.
@@ -110,6 +119,14 @@ fi
 /// Default post-commit hook script.
 ///
 /// Verifies that commits are signed with GPG or SSH.
+/// Handles all signature status codes from git:
+/// - G: Good signature
+/// - B: Bad signature
+/// - X: Expired key
+/// - Y: Expired signature
+/// - R: Revoked key
+/// - E: Cannot verify (missing key)
+/// - N: Not signed
 const DEFAULT_POST_COMMIT_HOOK: &str = r#"#!/bin/sh
 COMMIT_HASH=$(git rev-parse HEAD 2>/dev/null)
 if [ -z "$COMMIT_HASH" ]; then
@@ -117,17 +134,41 @@ if [ -z "$COMMIT_HASH" ]; then
     exit 1
 fi
 
-SIG_STATUS=$(git log -1 --format='%G?' "$COMMIT_HASH" 2>/dev/null || echo "N")
+SIG_STATUS=$(git show --pretty=format:"%G?" --no-patch "$COMMIT_HASH" 2>/dev/null || echo "N")
 
 case "$SIG_STATUS" in
-    G) echo "Commit is signed." ;;
+    G)
+        echo "Commit is signed."
+        ;;
+    B)
+        echo "Error: Bad signature on commit $COMMIT_HASH"
+        echo "The commit signature is invalid."
+        exit 1
+        ;;
+    X)
+        echo "Error: Expired key used to sign commit $COMMIT_HASH"
+        exit 1
+        ;;
+    Y)
+        echo "Error: Expired signature on commit $COMMIT_HASH"
+        exit 1
+        ;;
+    R)
+        echo "Error: Revoked key used to sign commit $COMMIT_HASH"
+        exit 1
+        ;;
+    E)
+        echo "Error: Cannot verify signature on commit $COMMIT_HASH"
+        echo "Check your signing key configuration and allowed_signers file."
+        exit 1
+        ;;
     N)
         echo "Error: Commit $COMMIT_HASH is not signed!"
         echo "Configure signing: git config commit.gpgsign true"
         exit 1
         ;;
     *)
-        echo "Error: Invalid signature (status: $SIG_STATUS)"
+        echo "Error: Unknown signature status '$SIG_STATUS' for commit $COMMIT_HASH"
         exit 1
         ;;
 esac
@@ -164,7 +205,10 @@ impl Rhusky {
     /// ```rust
     /// use rhusky::Rhusky;
     ///
-    /// Rhusky::new().hooks_dir(".git-hooks").install().ok();
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     Rhusky::new().hooks_dir(".git-hooks").install().await.ok();
+    /// }
     /// ```
     #[must_use]
     pub fn hooks_dir(mut self, path: &str) -> Self {
@@ -182,11 +226,15 @@ impl Rhusky {
     /// ```rust
     /// use rhusky::Rhusky;
     ///
-    /// Rhusky::new()
-    ///     .skip_in_env("GITHUB_ACTIONS")
-    ///     .skip_in_env("GITLAB_CI")
-    ///     .install()
-    ///     .ok();
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     Rhusky::new()
+    ///         .skip_in_env("GITHUB_ACTIONS")
+    ///         .skip_in_env("GITLAB_CI")
+    ///         .install()
+    ///         .await
+    ///         .ok();
+    /// }
     /// ```
     #[must_use]
     pub fn skip_in_env(mut self, var: &str) -> Self {
@@ -212,7 +260,10 @@ impl Rhusky {
     /// ```rust
     /// use rhusky::Rhusky;
     ///
-    /// Rhusky::new().with_default_hooks().install().ok();
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     Rhusky::new().with_default_hooks().install().await.ok();
+    /// }
     /// ```
     #[must_use]
     pub fn with_default_hooks(mut self) -> Self {
@@ -240,13 +291,14 @@ impl Rhusky {
     /// # Example
     ///
     /// ```rust,ignore
-    /// fn main() {
-    ///     if let Err(e) = rhusky::Rhusky::new().install() {
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     if let Err(e) = rhusky::Rhusky::new().install().await {
     ///         eprintln!("Warning: Failed to install git hooks: {}", e);
     ///     }
     /// }
     /// ```
-    pub fn install(&self) -> io::Result<()> {
+    pub async fn install(&self) -> io::Result<()> {
         // Check if we should skip installation
         for var in &self.skip_env_vars {
             if env::var(var).is_ok() {
@@ -259,15 +311,15 @@ impl Rhusky {
 
         // Create hooks directory if it doesn't exist
         let hooks_path = repo_root.join(&self.hooks_dir);
-        if !hooks_path.exists() {
-            fs::create_dir_all(&hooks_path)?;
+        if !try_exists(&hooks_path).await.map_err(io::Error::other)? {
+            ensure_dir(&hooks_path).await.map_err(io::Error::other)?;
         }
 
         // Create default hooks if requested
         if self.create_default_hooks {
-            create_hook_if_missing(&hooks_path, "pre-commit", DEFAULT_PRE_COMMIT_HOOK)?;
-            create_hook_if_missing(&hooks_path, "commit-msg", DEFAULT_COMMIT_MSG_HOOK)?;
-            create_hook_if_missing(&hooks_path, "post-commit", DEFAULT_POST_COMMIT_HOOK)?;
+            create_hook_if_missing(&hooks_path, "pre-commit", DEFAULT_PRE_COMMIT_HOOK).await?;
+            create_hook_if_missing(&hooks_path, "commit-msg", DEFAULT_COMMIT_MSG_HOOK).await?;
+            create_hook_if_missing(&hooks_path, "post-commit", DEFAULT_POST_COMMIT_HOOK).await?;
         }
 
         // Set core.hooksPath
@@ -314,23 +366,30 @@ fn set_hooks_path(repo_root: &Path, hooks_dir: &str) -> io::Result<()> {
 /// Create a hook file if it doesn't already exist.
 ///
 /// On Unix systems, the file is made executable (mode 0o755).
-fn create_hook_if_missing(hooks_dir: &Path, name: &str, content: &str) -> io::Result<()> {
+async fn create_hook_if_missing(hooks_dir: &Path, name: &str, content: &str) -> io::Result<()> {
     let hook_path = hooks_dir.join(name);
 
     // Never overwrite existing hooks
-    if hook_path.exists() {
+    if try_exists(&hook_path).await.map_err(io::Error::other)? {
         return Ok(());
     }
 
-    fs::write(&hook_path, content)?;
+    write_bytes(&hook_path, content.as_bytes())
+        .await
+        .map_err(io::Error::other)?;
 
     // Make executable on Unix
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&hook_path)?.permissions();
+        let mut perms = symlink_metadata(&hook_path)
+            .await
+            .map_err(io::Error::other)?
+            .permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(&hook_path, perms)?;
+        set_permissions(&hook_path, perms)
+            .await
+            .map_err(io::Error::other)?;
     }
 
     Ok(())
@@ -416,14 +475,16 @@ mod tests {
 mod integration_tests {
     use std::process::Command;
 
+    use async_fs_io::TempDir;
     use serial_test::serial;
-    use tempfile::TempDir;
 
     use super::*;
 
     /// Helper to create a temporary git repository.
-    fn create_temp_git_repo() -> TempDir {
-        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+    async fn create_temp_git_repo() -> TempDir {
+        let temp_dir = TempDir::create(std::env::temp_dir())
+            .await
+            .expect("Failed to create temp directory");
         Command::new("git")
             .args(["init"])
             .current_dir(temp_dir.path())
@@ -478,39 +539,39 @@ mod integration_tests {
 
     // ==================== Install Tests ====================
 
-    #[test]
+    #[tokio::test]
     #[serial]
-    fn test_install_creates_hooks_directory() {
-        let temp_repo = create_temp_git_repo();
+    async fn test_install_creates_hooks_directory() {
+        let temp_repo = create_temp_git_repo().await;
         let hooks_dir = temp_repo.path().join(".githooks");
 
         // Ensure hooks dir doesn't exist
-        assert!(!hooks_dir.exists());
+        assert!(!async_fs_io::try_exists(&hooks_dir).await.unwrap());
 
         // Change to temp repo and install
         let original_dir = env::current_dir().unwrap();
         env::set_current_dir(temp_repo.path()).unwrap();
 
         let ci_value = clear_ci_env();
-        let result = Rhusky::new().install();
+        let result = Rhusky::new().install().await;
         restore_ci_env(ci_value);
 
         env::set_current_dir(original_dir).unwrap();
 
         assert!(result.is_ok());
-        assert!(hooks_dir.exists());
+        assert!(async_fs_io::try_exists(&hooks_dir).await.unwrap());
     }
 
-    #[test]
+    #[tokio::test]
     #[serial]
-    fn test_install_sets_hooks_path_config() {
-        let temp_repo = create_temp_git_repo();
+    async fn test_install_sets_hooks_path_config() {
+        let temp_repo = create_temp_git_repo().await;
 
         let original_dir = env::current_dir().unwrap();
         env::set_current_dir(temp_repo.path()).unwrap();
 
         let ci_value = clear_ci_env();
-        let result = Rhusky::new().install();
+        let result = Rhusky::new().install().await;
         restore_ci_env(ci_value);
 
         env::set_current_dir(original_dir).unwrap();
@@ -521,10 +582,10 @@ mod integration_tests {
         assert_eq!(hooks_path, Some(".githooks".to_string()));
     }
 
-    #[test]
+    #[tokio::test]
     #[serial]
-    fn test_install_with_custom_hooks_dir() {
-        let temp_repo = create_temp_git_repo();
+    async fn test_install_with_custom_hooks_dir() {
+        let temp_repo = create_temp_git_repo().await;
         let custom_dir = ".my-hooks";
         let hooks_dir = temp_repo.path().join(custom_dir);
 
@@ -532,34 +593,36 @@ mod integration_tests {
         env::set_current_dir(temp_repo.path()).unwrap();
 
         let ci_value = clear_ci_env();
-        let result = Rhusky::new().hooks_dir(custom_dir).install();
+        let result = Rhusky::new().hooks_dir(custom_dir).install().await;
         restore_ci_env(ci_value);
 
         env::set_current_dir(original_dir).unwrap();
 
         assert!(result.is_ok());
-        assert!(hooks_dir.exists());
+        assert!(async_fs_io::try_exists(&hooks_dir).await.unwrap());
 
         let hooks_path = get_hooks_path(temp_repo.path());
         assert_eq!(hooks_path, Some(custom_dir.to_string()));
     }
 
-    #[test]
+    #[tokio::test]
     #[serial]
-    fn test_install_preserves_existing_hooks_directory() {
-        let temp_repo = create_temp_git_repo();
+    async fn test_install_preserves_existing_hooks_directory() {
+        let temp_repo = create_temp_git_repo().await;
         let hooks_dir = temp_repo.path().join(".githooks");
 
         // Create hooks directory with a file
-        fs::create_dir_all(&hooks_dir).unwrap();
+        async_fs_io::ensure_dir(&hooks_dir).await.unwrap();
         let hook_file = hooks_dir.join("pre-commit");
-        fs::write(&hook_file, "#!/bin/sh\necho 'test'").unwrap();
+        async_fs_io::write_bytes(&hook_file, b"#!/bin/sh\necho 'test'")
+            .await
+            .unwrap();
 
         let original_dir = env::current_dir().unwrap();
         env::set_current_dir(temp_repo.path()).unwrap();
 
         let ci_value = clear_ci_env();
-        let result = Rhusky::new().install();
+        let result = Rhusky::new().install().await;
         restore_ci_env(ci_value);
 
         env::set_current_dir(original_dir).unwrap();
@@ -567,15 +630,17 @@ mod integration_tests {
         assert!(result.is_ok());
 
         // Verify existing hook file is preserved
-        assert!(hook_file.exists());
-        let content = fs::read_to_string(&hook_file).unwrap();
+        assert!(async_fs_io::try_exists(&hook_file).await.unwrap());
+        let content = async_fs_io::read_string_bounded(&hook_file, 1024 * 1024)
+            .await
+            .unwrap();
         assert!(content.contains("echo 'test'"));
     }
 
-    #[test]
+    #[tokio::test]
     #[serial]
-    fn test_install_is_idempotent() {
-        let temp_repo = create_temp_git_repo();
+    async fn test_install_is_idempotent() {
+        let temp_repo = create_temp_git_repo().await;
 
         let original_dir = env::current_dir().unwrap();
         env::set_current_dir(temp_repo.path()).unwrap();
@@ -583,9 +648,9 @@ mod integration_tests {
         let ci_value = clear_ci_env();
 
         // Install multiple times
-        let result1 = Rhusky::new().install();
-        let result2 = Rhusky::new().install();
-        let result3 = Rhusky::new().install();
+        let result1 = Rhusky::new().install().await;
+        let result2 = Rhusky::new().install().await;
+        let result3 = Rhusky::new().install().await;
 
         restore_ci_env(ci_value);
         env::set_current_dir(original_dir).unwrap();
@@ -600,10 +665,10 @@ mod integration_tests {
 
     // ==================== Skip Behavior Tests ====================
 
-    #[test]
+    #[tokio::test]
     #[serial]
-    fn test_install_skips_when_ci_env_set() {
-        let temp_repo = create_temp_git_repo();
+    async fn test_install_skips_when_ci_env_set() {
+        let temp_repo = create_temp_git_repo().await;
         let hooks_dir = temp_repo.path().join(".githooks");
 
         let original_dir = env::current_dir().unwrap();
@@ -614,7 +679,7 @@ mod integration_tests {
         // SAFETY: Single-threaded test environment
         unsafe { env::set_var("CI", "true") };
 
-        let result = Rhusky::new().install();
+        let result = Rhusky::new().install().await;
 
         // Restore CI env var
         // SAFETY: Single-threaded test environment
@@ -630,13 +695,13 @@ mod integration_tests {
         assert!(result.is_ok());
 
         // But hooks directory should NOT be created
-        assert!(!hooks_dir.exists());
+        assert!(!async_fs_io::try_exists(&hooks_dir).await.unwrap());
     }
 
-    #[test]
+    #[tokio::test]
     #[serial]
-    fn test_install_skips_when_custom_env_set() {
-        let temp_repo = create_temp_git_repo();
+    async fn test_install_skips_when_custom_env_set() {
+        let temp_repo = create_temp_git_repo().await;
         let hooks_dir = temp_repo.path().join(".githooks");
 
         let original_dir = env::current_dir().unwrap();
@@ -647,7 +712,10 @@ mod integration_tests {
         // SAFETY: Single-threaded test environment
         unsafe { env::set_var("RHUSKY_TEST_SKIP", "1") };
 
-        let result = Rhusky::new().skip_in_env("RHUSKY_TEST_SKIP").install();
+        let result = Rhusky::new()
+            .skip_in_env("RHUSKY_TEST_SKIP")
+            .install()
+            .await;
 
         // Cleanup
         // SAFETY: Single-threaded test environment
@@ -656,13 +724,13 @@ mod integration_tests {
         env::set_current_dir(original_dir).unwrap();
 
         assert!(result.is_ok());
-        assert!(!hooks_dir.exists());
+        assert!(!async_fs_io::try_exists(&hooks_dir).await.unwrap());
     }
 
-    #[test]
+    #[tokio::test]
     #[serial]
-    fn test_install_runs_when_skip_env_not_set() {
-        let temp_repo = create_temp_git_repo();
+    async fn test_install_runs_when_skip_env_not_set() {
+        let temp_repo = create_temp_git_repo().await;
         let hooks_dir = temp_repo.path().join(".githooks");
 
         let original_dir = env::current_dir().unwrap();
@@ -675,28 +743,29 @@ mod integration_tests {
 
         let result = Rhusky::new()
             .skip_in_env("RHUSKY_NONEXISTENT_VAR")
-            .install();
+            .install()
+            .await;
 
         restore_ci_env(ci_value);
         env::set_current_dir(original_dir).unwrap();
 
         assert!(result.is_ok());
-        assert!(hooks_dir.exists());
+        assert!(async_fs_io::try_exists(&hooks_dir).await.unwrap());
     }
 
     // ==================== Error Handling Tests ====================
 
-    #[test]
+    #[tokio::test]
     #[serial]
-    fn test_install_fails_outside_git_repo() {
-        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+    async fn test_install_fails_outside_git_repo() {
+        let temp_dir = TempDir::create(std::env::temp_dir()).await.unwrap();
         // Note: NOT initializing git repo
 
         let original_dir = env::current_dir().unwrap();
         env::set_current_dir(temp_dir.path()).unwrap();
 
         let ci_value = clear_ci_env();
-        let result = Rhusky::new().install();
+        let result = Rhusky::new().install().await;
         restore_ci_env(ci_value);
 
         env::set_current_dir(original_dir).unwrap();
@@ -706,10 +775,10 @@ mod integration_tests {
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
     }
 
-    #[test]
+    #[tokio::test]
     #[serial]
-    fn test_install_creates_nested_hooks_directory() {
-        let temp_repo = create_temp_git_repo();
+    async fn test_install_creates_nested_hooks_directory() {
+        let temp_repo = create_temp_git_repo().await;
         let nested_dir = "scripts/git/hooks";
         let hooks_dir = temp_repo.path().join(nested_dir);
 
@@ -717,13 +786,13 @@ mod integration_tests {
         env::set_current_dir(temp_repo.path()).unwrap();
 
         let ci_value = clear_ci_env();
-        let result = Rhusky::new().hooks_dir(nested_dir).install();
+        let result = Rhusky::new().hooks_dir(nested_dir).install().await;
         restore_ci_env(ci_value);
 
         env::set_current_dir(original_dir).unwrap();
 
         assert!(result.is_ok());
-        assert!(hooks_dir.exists());
+        assert!(async_fs_io::try_exists(&hooks_dir).await.unwrap());
 
         let hooks_path = get_hooks_path(temp_repo.path());
         assert_eq!(hooks_path, Some(nested_dir.to_string()));
@@ -731,80 +800,115 @@ mod integration_tests {
 
     // ==================== Default Hooks Tests ====================
 
-    #[test]
+    #[tokio::test]
     #[serial]
-    fn test_install_without_default_hooks_creates_no_hooks() {
-        let temp_repo = create_temp_git_repo();
+    async fn test_install_without_default_hooks_creates_no_hooks() {
+        let temp_repo = create_temp_git_repo().await;
         let hooks_dir = temp_repo.path().join(".githooks");
 
         let original_dir = env::current_dir().unwrap();
         env::set_current_dir(temp_repo.path()).unwrap();
 
         let ci_value = clear_ci_env();
-        let result = Rhusky::new().install();
+        let result = Rhusky::new().install().await;
         restore_ci_env(ci_value);
 
         env::set_current_dir(original_dir).unwrap();
 
         assert!(result.is_ok());
-        assert!(hooks_dir.exists());
+        assert!(async_fs_io::try_exists(&hooks_dir).await.unwrap());
 
         // No hook files should be created
-        assert!(!hooks_dir.join("pre-commit").exists());
-        assert!(!hooks_dir.join("commit-msg").exists());
-        assert!(!hooks_dir.join("post-commit").exists());
+        assert!(
+            !async_fs_io::try_exists(hooks_dir.join("pre-commit"))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !async_fs_io::try_exists(hooks_dir.join("commit-msg"))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !async_fs_io::try_exists(hooks_dir.join("post-commit"))
+                .await
+                .unwrap()
+        );
     }
 
-    #[test]
+    #[tokio::test]
     #[serial]
-    fn test_install_with_default_hooks_creates_hooks() {
-        let temp_repo = create_temp_git_repo();
+    async fn test_install_with_default_hooks_creates_hooks() {
+        let temp_repo = create_temp_git_repo().await;
         let hooks_dir = temp_repo.path().join(".githooks");
 
         let original_dir = env::current_dir().unwrap();
         env::set_current_dir(temp_repo.path()).unwrap();
 
         let ci_value = clear_ci_env();
-        let result = Rhusky::new().with_default_hooks().install();
+        let result = Rhusky::new().with_default_hooks().install().await;
         restore_ci_env(ci_value);
 
         env::set_current_dir(original_dir).unwrap();
 
         assert!(result.is_ok());
-        assert!(hooks_dir.exists());
+        assert!(async_fs_io::try_exists(&hooks_dir).await.unwrap());
 
         // All default hook files should be created
-        assert!(hooks_dir.join("pre-commit").exists());
-        assert!(hooks_dir.join("commit-msg").exists());
-        assert!(hooks_dir.join("post-commit").exists());
+        assert!(
+            async_fs_io::try_exists(hooks_dir.join("pre-commit"))
+                .await
+                .unwrap()
+        );
+        assert!(
+            async_fs_io::try_exists(hooks_dir.join("commit-msg"))
+                .await
+                .unwrap()
+        );
+        assert!(
+            async_fs_io::try_exists(hooks_dir.join("post-commit"))
+                .await
+                .unwrap()
+        );
 
         // Verify hook contents start with shebang
-        let pre_commit = fs::read_to_string(hooks_dir.join("pre-commit")).unwrap();
+        let pre_commit =
+            async_fs_io::read_string_bounded(hooks_dir.join("pre-commit"), 1024 * 1024)
+                .await
+                .unwrap();
         assert!(pre_commit.starts_with("#!/bin/sh"));
 
-        let commit_msg = fs::read_to_string(hooks_dir.join("commit-msg")).unwrap();
+        let commit_msg =
+            async_fs_io::read_string_bounded(hooks_dir.join("commit-msg"), 1024 * 1024)
+                .await
+                .unwrap();
         assert!(commit_msg.starts_with("#!/bin/sh"));
 
-        let post_commit = fs::read_to_string(hooks_dir.join("post-commit")).unwrap();
+        let post_commit =
+            async_fs_io::read_string_bounded(hooks_dir.join("post-commit"), 1024 * 1024)
+                .await
+                .unwrap();
         assert!(post_commit.starts_with("#!/bin/sh"));
     }
 
-    #[test]
+    #[tokio::test]
     #[serial]
-    fn test_install_with_default_hooks_does_not_overwrite_existing() {
-        let temp_repo = create_temp_git_repo();
+    async fn test_install_with_default_hooks_does_not_overwrite_existing() {
+        let temp_repo = create_temp_git_repo().await;
         let hooks_dir = temp_repo.path().join(".githooks");
 
         // Create hooks directory with an existing hook
-        fs::create_dir_all(&hooks_dir).unwrap();
+        async_fs_io::ensure_dir(&hooks_dir).await.unwrap();
         let existing_content = "#!/bin/sh\necho 'custom hook'";
-        fs::write(hooks_dir.join("pre-commit"), existing_content).unwrap();
+        async_fs_io::write_bytes(hooks_dir.join("pre-commit"), existing_content.as_bytes())
+            .await
+            .unwrap();
 
         let original_dir = env::current_dir().unwrap();
         env::set_current_dir(temp_repo.path()).unwrap();
 
         let ci_value = clear_ci_env();
-        let result = Rhusky::new().with_default_hooks().install();
+        let result = Rhusky::new().with_default_hooks().install().await;
         restore_ci_env(ci_value);
 
         env::set_current_dir(original_dir).unwrap();
@@ -812,28 +916,39 @@ mod integration_tests {
         assert!(result.is_ok());
 
         // Existing hook should NOT be overwritten
-        let pre_commit = fs::read_to_string(hooks_dir.join("pre-commit")).unwrap();
+        let pre_commit =
+            async_fs_io::read_string_bounded(hooks_dir.join("pre-commit"), 1024 * 1024)
+                .await
+                .unwrap();
         assert_eq!(pre_commit, existing_content);
 
         // Other hooks should be created
-        assert!(hooks_dir.join("commit-msg").exists());
-        assert!(hooks_dir.join("post-commit").exists());
+        assert!(
+            async_fs_io::try_exists(hooks_dir.join("commit-msg"))
+                .await
+                .unwrap()
+        );
+        assert!(
+            async_fs_io::try_exists(hooks_dir.join("post-commit"))
+                .await
+                .unwrap()
+        );
     }
 
     #[cfg(unix)]
-    #[test]
+    #[tokio::test]
     #[serial]
-    fn test_install_with_default_hooks_are_executable() {
+    async fn test_install_with_default_hooks_are_executable() {
         use std::os::unix::fs::PermissionsExt;
 
-        let temp_repo = create_temp_git_repo();
+        let temp_repo = create_temp_git_repo().await;
         let hooks_dir = temp_repo.path().join(".githooks");
 
         let original_dir = env::current_dir().unwrap();
         env::set_current_dir(temp_repo.path()).unwrap();
 
         let ci_value = clear_ci_env();
-        let result = Rhusky::new().with_default_hooks().install();
+        let result = Rhusky::new().with_default_hooks().install().await;
         restore_ci_env(ci_value);
 
         env::set_current_dir(original_dir).unwrap();
@@ -843,7 +958,10 @@ mod integration_tests {
         // Check that hooks are executable
         for hook_name in ["pre-commit", "commit-msg", "post-commit"] {
             let hook_path = hooks_dir.join(hook_name);
-            let perms = fs::metadata(&hook_path).unwrap().permissions();
+            let perms = async_fs_io::symlink_metadata(&hook_path)
+                .await
+                .unwrap()
+                .permissions();
             let mode = perms.mode();
             // Check executable bit for owner (0o100)
             assert!(
