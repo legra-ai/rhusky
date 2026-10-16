@@ -555,7 +555,8 @@ mod integration_tests {
             .current_dir(temp_dir.path())
             .output()
             .expect("Failed to init git repo");
-        // Configure git user for the temp repo (required for some git operations)
+        // Configure git user for the temp repo (required for some git
+        // operations)
         Command::new("git")
             .args(["config", "user.email", "test@example.com"])
             .current_dir(temp_dir.path())
@@ -623,7 +624,8 @@ mod integration_tests {
     /// Returns the original value to restore later.
     fn clear_ci_env() -> Option<String> {
         let ci_value = env::var("CI").ok();
-        // SAFETY: We're in single-threaded tests and restoring immediately after
+        // SAFETY: We're in single-threaded tests and restoring immediately
+        // after
         unsafe { env::remove_var("CI") };
         ci_value
     }
