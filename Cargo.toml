@@ -11,7 +11,7 @@ authors = ["Jacobus Geluk <jacobus.geluk@dataroad.com>"]
 repository = "https://github.com/legra-ai/rhusky"
 documentation = "https://docs.rs/rhusky"
 homepage = "https://github.com/legra-ai/rhusky"
-rust-version = "1.85.0"
+rust-version = "1.99.1"
 publish = true
 
 exclude = [

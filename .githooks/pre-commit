@@ -12,14 +12,14 @@ echo "Rust files detected in commit, running checks..."
 echo ""
 
 # Run cargo fmt check on changed files only
-echo "Running cargo +nightly fmt --check on changed files..."
+echo "Running cargo fmt --check on changed files..."
 # shellcheck disable=SC2086
-cargo +nightly fmt -- --check $RUST_FILES
+cargo fmt -- --check $RUST_FILES
 
 if [ $? -ne 0 ]; then
     echo ""
     echo "❌ Code formatting check failed!"
-    echo "Please run 'cargo +nightly fmt' to format your code before committing."
+    echo "Please run 'cargo fmt' to format your code before committing."
     exit 1
 fi
 
@@ -27,8 +27,8 @@ echo "✅ Code formatting check passed"
 
 # Run clippy on whole crate (clippy doesn't support individual files)
 echo ""
-echo "Running cargo +nightly clippy..."
-cargo +nightly clippy --all-targets --all-features -- -D warnings -W missing-docs
+echo "Running cargo clippy..."
+cargo clippy --all-targets --all-features -- -D warnings -W missing-docs
 
 if [ $? -ne 0 ]; then
     echo ""
