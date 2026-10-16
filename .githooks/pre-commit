@@ -14,7 +14,7 @@ echo ""
 # Run ./scripts/fmt.sh check on changed files only
 echo "Running ./scripts/fmt.sh --check on changed files..."
 # shellcheck disable=SC2086
-./scripts/fmt.sh -- --check $RUST_FILES
+./scripts/fmt.sh --check
 
 if [ $? -ne 0 ]; then
     echo ""
