@@ -9,7 +9,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "075ef53066a95849d90d4899af6a0c9000ab10396120d39c9756c5d0b0fad69d"
 dependencies = [
  "fs2",
- "rhusky 0.0.6 (registry+https://github.com/rust-lang/crates.io-index)",
+ "rhusky 0.0.6",
  "thiserror",
  "tokio",
  "uuid",
@@ -219,17 +219,17 @@ dependencies = [
 [[package]]
 name = "rhusky"
 version = "0.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd58f5095f1eaaee85441008005db48773976f5bb85bedd35d6cf3f04db8ec4b"
+
+[[package]]
+name = "rhusky"
+version = "1.0.0"
 dependencies = [
  "async-fs-io",
  "serial_test",
  "tokio",
 ]
-
-[[package]]
-name = "rhusky"
-version = "0.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd58f5095f1eaaee85441008005db48773976f5bb85bedd35d6cf3f04db8ec4b"
 
 [[package]]
 name = "rustversion"

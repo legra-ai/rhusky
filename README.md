@@ -24,7 +24,7 @@ Add rhusky to your build-dependencies:
 
 ```toml
 [build-dependencies]
-rhusky = "0.0.6"
+rhusky = "1.0.0"
 ```
 
 Opt the repository into build-script installation in
