@@ -224,7 +224,7 @@ checksum = "bd58f5095f1eaaee85441008005db48773976f5bb85bedd35d6cf3f04db8ec4b"
 
 [[package]]
 name = "rhusky"
-version = "1.0.2"
+version = "2.0.0"
 dependencies = [
  "async-fs-io",
  "serial_test",
