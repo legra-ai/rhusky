@@ -13,15 +13,7 @@
 //!
 //! ```toml
 //! [build-dependencies]
-//! rhusky = "0.0.6"
-//! ```
-//!
-//! Opt the repository into build-script installation in
-//! `.cargo/config.toml`:
-//!
-//! ```toml
-//! [env]
-//! RHUSKY_REPOSITORY_ROOT = { value = ".", relative = true, force = true }
+//! rhusky = "2"
 //! ```
 //!
 //! Create a `build.rs` file:
@@ -29,7 +21,7 @@
 //! ```rust,no_run
 //! rhusky::Rhusky::new()
 //!     .hooks_dir(".githooks")
-//!     .install_from_build_script()
+//!     .install_from_build_script(env!("CARGO_MANIFEST_DIR"))
 //!     .expect("failed to install repository Git hooks");
 //! ```
 //!
@@ -58,9 +50,6 @@ use std::{
     io,
 };
 
-/// Environment variable that explicitly opts a repository into build-script
-/// hook installation.
-pub const REPOSITORY_ROOT_ENV: &str = "RHUSKY_REPOSITORY_ROOT";
 use async_fs_io::{
     canonicalize,
     ensure_dir,
@@ -103,7 +92,7 @@ cargo clippy --locked --all-targets --all-features -- -D warnings || exit 1
 /// Validate the headline, never a later line in the commit body.
 const DEFAULT_COMMIT_MSG_HOOK: &str = r#"#!/bin/sh
 IFS= read -r headline < "$1" || exit 1
-if ! printf '%s\n' "$headline" | grep -Eq '^(feat|fix|build|chore|docs|style|ci|refactor|perf|test|revert)\([a-z0-9][a-z0-9./-]*\)!?: .+'; then
+if ! printf '%s\n' "$headline" | grep -Eq '^(feat|fix|build|chore|docs|style|ci|refactor|perf|test|revert)\([a-z0-9][a-z0-9./-]*\)!?: [^[:space:]](.*[^[:space:]])?$'; then
     printf 'Required: allowed-type(scope): description\n' >&2
     exit 1
 fi
@@ -241,44 +230,38 @@ impl Rhusky {
         self.install_from(&current_dir).await
     }
 
-    /// Install Git hooks when invoked from an owning package's build script.
+    /// Install hooks only for the checkout explicitly identified by its build
+    /// script.
     ///
-    /// Installation only runs when [`REPOSITORY_ROOT_ENV`] is set and Cargo's
-    /// `CARGO_MANIFEST_DIR` belongs to that same Git checkout. Inherited opt-in
-    /// from a caller never authorizes a registry dependency. Configure
-    /// that variable in the owning repository's `.cargo/config.toml` with a
-    /// config-relative path. Published dependencies do not load their source
-    /// repository's Cargo configuration, so they cannot alter a downstream
-    /// checkout.
-    ///
-    /// An opted-in repository returns any installation error to the caller.
-    /// Build scripts should treat that error as fatal so a broken repository
-    /// hook configuration cannot pass silently.
+    /// Pass `env!("CARGO_MANIFEST_DIR")` from `build.rs`. A source archive has
+    /// no `.git` marker and is intentionally ineligible. Inherited
+    /// environment variables never grant installation permission. Cargo's
+    /// manifest directory must belong to the explicit checkout, whose Git
+    /// root must match exactly.
     ///
     /// # Errors
     ///
-    /// Returns an error when the opted-in root is empty, is outside a Git
-    /// repository, or its hook configuration cannot be installed.
+    /// Returns an error for an empty/missing path, missing Cargo manifest
+    /// context, corrupt Git checkout, or failed hook installation in an
+    /// owning checkout.
     ///
     /// # Example
     ///
     /// ```rust,no_run
     /// rhusky::Rhusky::new()
-    ///     .install_from_build_script()
+    ///     .install_from_build_script(env!("CARGO_MANIFEST_DIR"))
     ///     .expect("failed to install repository Git hooks");
     /// ```
-    pub fn install_from_build_script(&self) -> io::Result<()> {
+    pub fn install_from_build_script(&self, repository_root: impl AsRef<Path>) -> io::Result<()> {
         if self.should_skip_for_environment() {
             return Ok(());
         }
 
-        let Some(repository_root) = env::var_os(REPOSITORY_ROOT_ENV) else {
-            return Ok(());
-        };
-        if repository_root.is_empty() {
+        let repository_root = repository_root.as_ref();
+        if repository_root.as_os_str().is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("{REPOSITORY_ROOT_ENV} is empty"),
+                "Checkout root is empty",
             ));
         }
 
@@ -294,17 +277,13 @@ impl Rhusky {
             .build()
             .map_err(io::Error::other)?;
         runtime
-            .block_on(self.install_owned_checkout(
-                Path::new(&repository_root),
-                Path::new(&manifest_directory),
-            ))
+            .block_on(self.install_owned_checkout(repository_root, Path::new(&manifest_directory)))
             .map_err(|error| {
                 io::Error::new(
                     error.kind(),
                     format!(
-                        "failed to install hooks for {}={}: {error}",
-                        REPOSITORY_ROOT_ENV,
-                        Path::new(&repository_root).display()
+                        "failed to install hooks for {}: {error}",
+                        repository_root.display()
                     ),
                 )
             })
@@ -316,6 +295,13 @@ impl Rhusky {
         // Cargo forwards the caller's configured environment to dependencies.
         // Permission belongs only to package sources inside the owning checkout.
         if !manifest.starts_with(&root) {
+            return Ok(());
+        }
+        // Published sources and nested path dependencies do not own a checkout.
+        if !try_exists(root.join(".git"))
+            .await
+            .map_err(io::Error::other)?
+        {
             return Ok(());
         }
         let manifest_root = canonicalize(get_repo_root(&manifest)?)
@@ -831,95 +817,56 @@ mod integration_tests {
 
     #[test]
     #[serial]
-    fn test_build_script_install_skips_non_primary_dependency() {
-        let temp_repo = create_temp_git_repo_sync();
-        let original_dir = env::current_dir().unwrap();
+    fn test_build_script_skips_a_foreign_manifest() {
+        let checkout = create_temp_git_repo_sync();
         let ci_value = clear_ci_env();
-        let repository_root_value = env::var("RHUSKY_REPOSITORY_ROOT").ok();
-
-        env::set_current_dir(temp_repo.path()).unwrap();
-        // SAFETY: This serial test restores the process environment below.
-        unsafe { env::remove_var("RHUSKY_REPOSITORY_ROOT") };
-
-        let result = Rhusky::new().install_from_build_script();
-
-        // SAFETY: This serial test restores the process environment.
-        unsafe {
-            restore_env_var("RHUSKY_REPOSITORY_ROOT", repository_root_value);
-        }
+        let result = Rhusky::new().install_from_build_script(checkout.path());
         restore_ci_env(ci_value);
-        env::set_current_dir(original_dir).unwrap();
-
         assert!(result.is_ok());
-        assert!(!path_exists(&temp_repo.path().join(".githooks")));
-        assert_eq!(get_hooks_path(temp_repo.path()), None);
+        assert!(!path_exists(&checkout.path().join(".githooks")));
+        assert_eq!(get_hooks_path(checkout.path()), None);
     }
 
     #[test]
     #[serial]
-    fn test_build_script_install_uses_primary_manifest_checkout() {
-        let temp_repo = create_temp_git_repo_sync();
-        let unrelated_dir = run_async(TempDir::create(std::env::temp_dir()))
-            .expect("Failed to create temp directory");
-        let original_dir = env::current_dir().unwrap();
+    fn test_build_script_install_uses_explicit_manifest_checkout() {
+        let checkout = create_temp_git_repo_sync();
         let ci_value = clear_ci_env();
-        let repository_root_value = env::var("RHUSKY_REPOSITORY_ROOT").ok();
         let manifest_value = env::var("CARGO_MANIFEST_DIR").ok();
-
-        env::set_current_dir(unrelated_dir.path()).unwrap();
-        // SAFETY: This serial test restores the process environment below.
+        // SAFETY: serialized test restores the manifest context before returning.
         unsafe {
-            env::set_var("RHUSKY_REPOSITORY_ROOT", temp_repo.path());
-            env::set_var("CARGO_MANIFEST_DIR", temp_repo.path());
-        };
-
-        let result = Rhusky::new().install_from_build_script();
-
-        // SAFETY: This serial test restores the process environment.
+            env::set_var("CARGO_MANIFEST_DIR", checkout.path());
+        }
+        let result = Rhusky::new().install_from_build_script(checkout.path());
         unsafe {
-            restore_env_var("RHUSKY_REPOSITORY_ROOT", repository_root_value);
             restore_env_var("CARGO_MANIFEST_DIR", manifest_value);
         }
         restore_ci_env(ci_value);
-        env::set_current_dir(original_dir).unwrap();
-
         assert!(result.is_ok());
-        assert!(path_exists(&temp_repo.path().join(".githooks")));
+        assert!(path_exists(&checkout.path().join(".githooks")));
         assert_eq!(
-            get_hooks_path(temp_repo.path()),
+            get_hooks_path(checkout.path()),
             Some(".githooks".to_string())
         );
     }
 
     #[test]
     #[serial]
-    fn test_build_script_install_fails_for_primary_package_outside_git() {
-        let repository_root = run_async(TempDir::create(std::env::temp_dir()))
-            .expect("Failed to create temp directory");
-        let original_dir = env::current_dir().unwrap();
+    fn test_build_script_skips_sources_without_a_git_marker() {
+        let archive = run_async(TempDir::create(env::temp_dir())).expect("source archive");
         let ci_value = clear_ci_env();
-        let repository_root_value = env::var("RHUSKY_REPOSITORY_ROOT").ok();
         let manifest_value = env::var("CARGO_MANIFEST_DIR").ok();
-
-        env::set_current_dir(repository_root.path()).unwrap();
-        // SAFETY: This serial test restores the process environment below.
+        // SAFETY: serialized test restores the manifest context before returning.
         unsafe {
-            env::set_var("RHUSKY_REPOSITORY_ROOT", repository_root.path());
-            env::set_var("CARGO_MANIFEST_DIR", repository_root.path());
-        };
-
-        let result = Rhusky::new().install_from_build_script();
-
-        // SAFETY: This serial test restores the process environment.
+            env::set_var("CARGO_MANIFEST_DIR", archive.path());
+        }
+        let result = Rhusky::new().install_from_build_script(archive.path());
         unsafe {
-            restore_env_var("RHUSKY_REPOSITORY_ROOT", repository_root_value);
             restore_env_var("CARGO_MANIFEST_DIR", manifest_value);
         }
         restore_ci_env(ci_value);
-        env::set_current_dir(original_dir).unwrap();
-
-        let error = result.expect_err("opted-in checkout installation must fail");
-        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(result.is_ok());
+        assert!(!path_exists(&archive.path().join(".githooks")));
     }
 
     // ==================== Error Handling Tests ====================
