@@ -37,6 +37,10 @@ class MaintenancePolicyTests(unittest.TestCase):
         self.assertIn('scripts/fmt.sh --check', hook)
         self.assertNotIn('+nightly ', hook)
 
+    def test_library_is_not_advertised_as_a_binary_installation(self):
+        manifest = tomllib.loads((ROOT / 'Cargo.toml').read_text())
+        self.assertNotIn('binstall', manifest['package'].get('metadata', {}))
+
     def test_windows_checkout_preserves_shell_and_toolchain_lf(self):
         self.assertIn('* text=auto eol=lf', (ROOT / '.gitattributes').read_text())
 

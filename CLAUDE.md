@@ -23,7 +23,6 @@ Published to crates.io at https://crates.io/crates/rhusky
 ```bash
 cargo build                    # Build
 cargo test                     # Run tests
-cargo install --path .         # Install locally
 
 # Formatting (requires nightly)
 sh scripts/fmt.sh --check   # Check
