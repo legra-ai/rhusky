@@ -81,7 +81,7 @@ fn dependency_cannot_reconfigure_the_opted_in_parent_checkout() {
     Rhusky::new()
         .hooks_dir("dependency-hooks")
         .with_default_hooks()
-        .install_from_build_script()
+        .install_from_build_script(dependency.path())
         .expect("skip non-owning dependency");
     let hooks = Command::new("git")
         .current_dir(owner.path())
@@ -99,4 +99,64 @@ fn dependency_cannot_reconfigure_the_opted_in_parent_checkout() {
             ))
             .expect("hook directory")
     );
+}
+
+#[test]
+#[serial]
+fn explicit_checkout_ignores_an_inherited_parent_opt_in() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let owner = runtime
+        .block_on(TempDir::create(env::temp_dir()))
+        .expect("owner");
+    let dependency = runtime
+        .block_on(TempDir::create(env::temp_dir()))
+        .expect("explicit checkout");
+    for directory in [owner.path(), dependency.path()] {
+        assert!(
+            Command::new("git")
+                .arg("init")
+                .arg(directory)
+                .output()
+                .expect("git init")
+                .status
+                .success()
+        );
+    }
+    assert!(
+        Command::new("git")
+            .current_dir(owner.path())
+            .args(["config", "core.hooksPath", "owned-hooks"])
+            .status()
+            .expect("owner hooks")
+            .success()
+    );
+    let _environment = Environment::capture();
+    // SAFETY: serialized test restores every variable through Environment.
+    unsafe {
+        env::remove_var("CI");
+        env::set_var("CARGO_MANIFEST_DIR", dependency.path());
+        env::set_var("RHUSKY_REPOSITORY_ROOT", owner.path());
+    }
+    Rhusky::new()
+        .hooks_dir("explicit-hooks")
+        .install_from_build_script(dependency.path())
+        .expect("install in explicit checkout");
+    for (directory, expected) in [
+        (owner.path(), "owned-hooks"),
+        (dependency.path(), "explicit-hooks"),
+    ] {
+        let result = Command::new("git")
+            .current_dir(directory)
+            .args(["config", "--get", "core.hooksPath"])
+            .output()
+            .expect("read hook configuration");
+        assert!(result.status.success());
+        assert_eq!(
+            String::from_utf8(result.stdout).expect("hook path").trim(),
+            expected
+        );
+    }
 }

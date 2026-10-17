@@ -16,7 +16,7 @@ Node.js [Husky](https://typicode.github.io/husky/) project.
 - **Truly idempotent**: Never overwrites your existing hook scripts
 - **No magic**: Just sets `core.hooksPath` in git config
 - **CI-aware**: Skips installation in CI environments
-- **Zero dependencies**: Pure Rust, no external crates
+- **Async filesystem access**: Uses the shared filesystem boundary
 
 ## Installation
 
@@ -24,20 +24,13 @@ Add rhusky to your build-dependencies:
 
 ```toml
 [build-dependencies]
-rhusky = "1.0.2"
+rhusky = "2"
 ```
 
-Opt the repository into build-script installation in
-`.cargo/config.toml`:
-
-```toml
-[env]
-RHUSKY_REPOSITORY_ROOT = { value = ".", relative = true, force = true }
-```
-
-Cargo resolves the value relative to the repository containing the
-`.cargo` directory. A published dependency does not inherit its own
-repository configuration, so it cannot alter a downstream checkout.
+The build script supplies its checkout root explicitly. Do not export
+`RHUSKY_REPOSITORY_ROOT`: Cargo forwards environment settings to every
+dependency build script. Published archives and nested path dependencies
+have no checkout-root `.git` marker and cannot install hooks.
 
 Create a `build.rs` file at the root of your project:
 
@@ -47,7 +40,7 @@ fn main() {
         .hooks_dir(".githooks")       // Custom hooks directory (default: ".githooks")
         .skip_in_env("GITHUB_ACTIONS") // Skip when this env var is set (CI always skipped)
         .with_default_hooks()          // Create default hooks if they don't exist
-        .install_from_build_script()
+        .install_from_build_script(env!("CARGO_MANIFEST_DIR"))
         .expect("failed to install repository Git hooks");
 }
 ```
@@ -71,7 +64,7 @@ chmod +x .githooks/pre-commit
 ```rust
 rhusky::Rhusky::new()
     .hooks_dir(".git-hooks")  // default is ".githooks"
-    .install_from_build_script()
+    .install_from_build_script(env!("CARGO_MANIFEST_DIR"))
     .expect("failed to install repository Git hooks");
 ```
 
@@ -84,7 +77,7 @@ variable is set. Add more:
 rhusky::Rhusky::new()
     .skip_in_env("GITHUB_ACTIONS")
     .skip_in_env("GITLAB_CI")
-    .install_from_build_script()
+    .install_from_build_script(env!("CARGO_MANIFEST_DIR"))
     .expect("failed to install repository Git hooks");
 ```
 
@@ -95,7 +88,7 @@ Optionally create default hook scripts for Rust projects:
 ```rust
 rhusky::Rhusky::new()
     .with_default_hooks()
-    .install_from_build_script()
+    .install_from_build_script(env!("CARGO_MANIFEST_DIR"))
     .expect("failed to install repository Git hooks");
 ```
 
