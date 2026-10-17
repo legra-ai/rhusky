@@ -4,9 +4,9 @@ version = 4
 
 [[package]]
 name = "async-fs-io"
-version = "0.1.5"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "075ef53066a95849d90d4899af6a0c9000ab10396120d39c9756c5d0b0fad69d"
+checksum = "e80fff4ed286521fad46c96e60dce5c868c792b947de687f4c46d264203a8ed7"
 dependencies = [
  "fs2",
  "rhusky 0.0.6",
