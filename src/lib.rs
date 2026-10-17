@@ -26,13 +26,11 @@
 //!
 //! Create a `build.rs` file:
 //!
-//! ```rust,ignore
-//! fn main() {
-//!     rhusky::Rhusky::new()
-//!         .hooks_dir(".githooks")
-//!         .install_from_build_script()
-//!         .expect("failed to install repository Git hooks");
-//! }
+//! ```rust,no_run
+//! rhusky::Rhusky::new()
+//!     .hooks_dir(".githooks")
+//!     .install_from_build_script()
+//!     .expect("failed to install repository Git hooks");
 //! ```
 //!
 //! Create your hooks in `.githooks/`:
@@ -225,7 +223,7 @@ impl Rhusky {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```rust,no_run
     /// #[tokio::main]
     /// async fn main() {
     ///     if let Err(e) = rhusky::Rhusky::new().install().await {
@@ -261,12 +259,10 @@ impl Rhusky {
     ///
     /// # Example
     ///
-    /// ```rust,ignore
-    /// fn main() {
-    ///     rhusky::Rhusky::new()
-    ///         .install_from_build_script()
-    ///         .expect("failed to install repository Git hooks");
-    /// }
+    /// ```rust,no_run
+    /// rhusky::Rhusky::new()
+    ///     .install_from_build_script()
+    ///     .expect("failed to install repository Git hooks");
     /// ```
     pub fn install_from_build_script(&self) -> io::Result<()> {
         if self.should_skip_for_environment() {
