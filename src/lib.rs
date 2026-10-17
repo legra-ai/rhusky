@@ -62,6 +62,7 @@ use std::{
 /// hook installation.
 pub const REPOSITORY_ROOT_ENV: &str = "RHUSKY_REPOSITORY_ROOT";
 use async_fs_io::{
+    canonicalize,
     ensure_dir,
     try_exists,
     write_bytes,
@@ -242,7 +243,9 @@ impl Rhusky {
 
     /// Install Git hooks when invoked from an owning package's build script.
     ///
-    /// Installation only runs when [`REPOSITORY_ROOT_ENV`] is set. Configure
+    /// Installation only runs when [`REPOSITORY_ROOT_ENV`] is set and Cargo's
+    /// `CARGO_MANIFEST_DIR` belongs to that same Git checkout. Inherited opt-in
+    /// from a caller never authorizes a registry dependency. Configure
     /// that variable in the owning repository's `.cargo/config.toml` with a
     /// config-relative path. Published dependencies do not load their source
     /// repository's Cargo configuration, so they cannot alter a downstream
@@ -279,12 +282,22 @@ impl Rhusky {
             ));
         }
 
+        let manifest_directory = env::var_os("CARGO_MANIFEST_DIR").ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "CARGO_MANIFEST_DIR is required in a build script",
+            )
+        })?;
+
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(io::Error::other)?;
         runtime
-            .block_on(self.install_from(Path::new(&repository_root)))
+            .block_on(self.install_owned_checkout(
+                Path::new(&repository_root),
+                Path::new(&manifest_directory),
+            ))
             .map_err(|error| {
                 io::Error::new(
                     error.kind(),
@@ -295,6 +308,23 @@ impl Rhusky {
                     ),
                 )
             })
+    }
+
+    async fn install_owned_checkout(&self, root: &Path, manifest: &Path) -> io::Result<()> {
+        let root = canonicalize(root).await.map_err(io::Error::other)?;
+        let manifest = canonicalize(manifest).await.map_err(io::Error::other)?;
+        // Cargo forwards the caller's configured environment to dependencies.
+        // Permission belongs only to package sources inside the owning checkout.
+        if !manifest.starts_with(&root) {
+            return Ok(());
+        }
+        let manifest_root = canonicalize(get_repo_root(&manifest)?)
+            .await
+            .map_err(io::Error::other)?;
+        if manifest_root != root {
+            return Ok(());
+        }
+        self.install_from(&root).await
     }
 
     fn should_skip_for_environment(&self) -> bool {
@@ -834,16 +864,21 @@ mod integration_tests {
         let original_dir = env::current_dir().unwrap();
         let ci_value = clear_ci_env();
         let repository_root_value = env::var("RHUSKY_REPOSITORY_ROOT").ok();
+        let manifest_value = env::var("CARGO_MANIFEST_DIR").ok();
 
         env::set_current_dir(unrelated_dir.path()).unwrap();
         // SAFETY: This serial test restores the process environment below.
-        unsafe { env::set_var("RHUSKY_REPOSITORY_ROOT", temp_repo.path()) };
+        unsafe {
+            env::set_var("RHUSKY_REPOSITORY_ROOT", temp_repo.path());
+            env::set_var("CARGO_MANIFEST_DIR", temp_repo.path());
+        };
 
         let result = Rhusky::new().install_from_build_script();
 
         // SAFETY: This serial test restores the process environment.
         unsafe {
             restore_env_var("RHUSKY_REPOSITORY_ROOT", repository_root_value);
+            restore_env_var("CARGO_MANIFEST_DIR", manifest_value);
         }
         restore_ci_env(ci_value);
         env::set_current_dir(original_dir).unwrap();
@@ -864,16 +899,21 @@ mod integration_tests {
         let original_dir = env::current_dir().unwrap();
         let ci_value = clear_ci_env();
         let repository_root_value = env::var("RHUSKY_REPOSITORY_ROOT").ok();
+        let manifest_value = env::var("CARGO_MANIFEST_DIR").ok();
 
         env::set_current_dir(repository_root.path()).unwrap();
         // SAFETY: This serial test restores the process environment below.
-        unsafe { env::set_var("RHUSKY_REPOSITORY_ROOT", repository_root.path()) };
+        unsafe {
+            env::set_var("RHUSKY_REPOSITORY_ROOT", repository_root.path());
+            env::set_var("CARGO_MANIFEST_DIR", repository_root.path());
+        };
 
         let result = Rhusky::new().install_from_build_script();
 
         // SAFETY: This serial test restores the process environment.
         unsafe {
             restore_env_var("RHUSKY_REPOSITORY_ROOT", repository_root_value);
+            restore_env_var("CARGO_MANIFEST_DIR", manifest_value);
         }
         restore_ci_env(ci_value);
         env::set_current_dir(original_dir).unwrap();

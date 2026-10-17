@@ -10,7 +10,7 @@ permissions:
   contents: read
 jobs:
   ci:
-    uses: legra-ai/github-actions/.github/workflows/cargo-maintenance.yml@f0903e967f06aa27da3bc435abc26990393ba503
+    uses: legra-ai/github-actions/.github/workflows/cargo-maintenance.yml@ce9df3b84458b7a2f0c771fad3a8bf725fbef47d
     with:
       crate-name: rhusky
       kind: library
