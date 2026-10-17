@@ -1,7 +1,7 @@
 # Publication
 
 `CI` is the sole publisher. It uses the shared tested-revision pipeline at
-`f0903e967f06aa27da3bc435abc26990393ba503`. PRs validate without publishing secrets. Main and the daily schedule
+`ce9df3b84458b7a2f0c771fad3a8bf725fbef47d`. PRs validate without publishing secrets. Main and the daily schedule
 prepare signed versions through the repository-scoped release App. Every test,
 artifact, tag and registry operation uses the prepared revision.
 
