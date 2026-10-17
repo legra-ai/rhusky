@@ -48,10 +48,11 @@ async fn generated_hooks_require_pins_and_reject_invalid_headlines() {
         .expect("read hook");
     assert!(pre_commit.contains("rustfmt-toolchain"));
     assert!(!pre_commit.contains("+nightly "));
-    for message in [
-        "oops(deps): invalid\n",
-        "fix: missing scope\n",
-        "invalid\n\nfix(deps): forged body\n",
+    for (message, valid) in [
+        ("fix(test): valid headline\n", true),
+        ("oops(deps): invalid\n", false),
+        ("fix: missing scope\n", false),
+        ("invalid\n\nfix(deps): forged body\n", false),
     ] {
         let file = directory.path().join("message");
         write_bytes(&file, message.as_bytes())
@@ -63,9 +64,10 @@ async fn generated_hooks_require_pins_and_reject_invalid_headlines() {
             .output()
             .await
             .expect("validate message");
-        assert!(
-            !result.status.success(),
-            "invalid headline was accepted: {message}"
+        assert_eq!(
+            result.status.success(),
+            valid,
+            "headline validation: {message}"
         );
     }
 }
