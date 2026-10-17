@@ -9,3 +9,6 @@ CHANGELOG.md
 # Environment files
 .env
 .env.local
+
+__pycache__/
+*.pyc

@@ -14,17 +14,7 @@ homepage = "https://github.com/legra-ai/rhusky"
 rust-version = "1.85.0"
 publish = true
 
-exclude = [
-    ".cargo/",
-    ".clippy.toml",
-    ".cursor/",
-    ".github/",
-    ".gitignore",
-    ".rust-toolchain.toml",
-    ".vscode/",
-    "cog.toml",
-    "rustfmt.toml",
-]
+include = ["src/**", "tests/**", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]
 
 [lib]
 name = "rhusky"
@@ -35,6 +25,7 @@ async-fs-io = "0.1.5"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [dev-dependencies]
+tokio = { version = "1", features = ["process"] }
 serial_test = "3.5"
 
 [package.metadata.binstall]

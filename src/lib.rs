@@ -82,108 +82,42 @@ pub struct Rhusky {
     create_default_hooks: bool,
 }
 
-/// Default pre-commit hook script for Rust projects.
-///
-/// Checks for nightly toolchain, then runs `cargo +nightly fmt --check`
-/// and `cargo +nightly clippy` on staged Rust files.
+/// Default pre-commit hook using the repository's explicit toolchain pins.
 const DEFAULT_PRE_COMMIT_HOOK: &str = r#"#!/bin/sh
-# Check for nightly toolchain
-if ! rustup run nightly rustc --version > /dev/null 2>&1; then
-    echo "Error: Rust nightly toolchain is required but not installed."
-    echo "Install with: rustup install nightly"
-    exit 1
-fi
-
-# Check for Rust files in commit
-RUST_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.rs$' || true)
-if [ -z "$RUST_FILES" ]; then
+staged=$(git diff --cached --name-only --diff-filter=ACM) || exit 1
+if ! printf '%s\n' "$staged" | grep -Eq '\.rs$|(^|/)Cargo\.toml$'; then
     exit 0
 fi
-
-echo "Running cargo +nightly fmt --check..."
-if ! cargo +nightly fmt -- --check; then
-    echo "Format check failed. Run: cargo +nightly fmt"
+if [ ! -f rust-toolchain.toml ]; then
+    printf 'A pinned rust-toolchain.toml is required\n' >&2
     exit 1
 fi
-
-echo "Running cargo +nightly clippy..."
-if ! cargo +nightly clippy --all-targets -- -D warnings; then
-    echo "Clippy check failed."
+IFS= read -r formatter < rustfmt-toolchain || exit 1
+if ! printf '%s\n' "$formatter" | grep -Eq '^(nightly-[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]+\.[0-9]+\.[0-9]+)$'; then
+    printf 'rustfmt-toolchain must name an exact toolchain\n' >&2
     exit 1
 fi
+cargo "+$formatter" fmt --all -- --check || exit 1
+cargo clippy --locked --all-targets --all-features -- -D warnings || exit 1
 "#;
 
-/// Default commit-msg hook script.
-///
-/// Validates conventional commit format with mandatory scope.
-/// Format: `type(scope): description`
+/// Validate the headline, never a later line in the commit body.
 const DEFAULT_COMMIT_MSG_HOOK: &str = r#"#!/bin/sh
-# Validate conventional commit format with mandatory scope
-# Format: type(scope): description
-if ! grep -qE '^[a-z]+\([a-z0-9./-]+\)!?: .+' "$1"; then
-    echo "Error: Invalid commit message format."
-    echo "Required: type(scope): description"
-    echo "Example: feat(api): add user endpoint"
+IFS= read -r headline < "$1" || exit 1
+if ! printf '%s\n' "$headline" | grep -Eq '^(feat|fix|build|chore|docs|style|ci|refactor|perf|test|revert)\([a-z0-9][a-z0-9./-]*\)!?: .+'; then
+    printf 'Required: allowed-type(scope): description\n' >&2
     exit 1
 fi
 "#;
 
-/// Default post-commit hook script.
-///
-/// Verifies that commits are signed with GPG or SSH.
-/// Handles all signature status codes from git:
-/// - G: Good signature
-/// - B: Bad signature
-/// - X: Expired key
-/// - Y: Expired signature
-/// - R: Revoked key
-/// - E: Cannot verify (missing key)
-/// - N: Not signed
+/// Require a verified signature and preserve Git failures as hard errors.
 const DEFAULT_POST_COMMIT_HOOK: &str = r#"#!/bin/sh
-COMMIT_HASH=$(git rev-parse HEAD 2>/dev/null)
-if [ -z "$COMMIT_HASH" ]; then
-    echo "Error: Failed to get commit hash."
+commit=$(git rev-parse HEAD) || exit 1
+signature=$(git show --pretty=format:'%G?' --no-patch "$commit") || exit 1
+if [ "$signature" != G ]; then
+    printf 'Commit %s has invalid signature status %s\n' "$commit" "$signature" >&2
     exit 1
 fi
-
-SIG_STATUS=$(git show --pretty=format:"%G?" --no-patch "$COMMIT_HASH" 2>/dev/null || echo "N")
-
-case "$SIG_STATUS" in
-    G)
-        echo "Commit is signed."
-        ;;
-    B)
-        echo "Error: Bad signature on commit $COMMIT_HASH"
-        echo "The commit signature is invalid."
-        exit 1
-        ;;
-    X)
-        echo "Error: Expired key used to sign commit $COMMIT_HASH"
-        exit 1
-        ;;
-    Y)
-        echo "Error: Expired signature on commit $COMMIT_HASH"
-        exit 1
-        ;;
-    R)
-        echo "Error: Revoked key used to sign commit $COMMIT_HASH"
-        exit 1
-        ;;
-    E)
-        echo "Error: Cannot verify signature on commit $COMMIT_HASH"
-        echo "Check your signing key configuration and allowed_signers file."
-        exit 1
-        ;;
-    N)
-        echo "Error: Commit $COMMIT_HASH is not signed!"
-        echo "Configure signing: git config commit.gpgsign true"
-        exit 1
-        ;;
-    *)
-        echo "Error: Unknown signature status '$SIG_STATUS' for commit $COMMIT_HASH"
-        exit 1
-        ;;
-esac
 "#;
 
 impl Default for Rhusky {
@@ -250,8 +184,9 @@ impl Rhusky {
     /// Creates pre-commit, commit-msg, and post-commit hooks with
     /// sensible defaults for Rust projects:
     ///
-    /// - **pre-commit**: Runs `cargo +nightly fmt --check` and `cargo +nightly
-    ///   clippy` on staged Rust files
+    /// - **pre-commit**: Requires `rust-toolchain.toml` and
+    ///   `rustfmt-toolchain`; validates Rust and manifest changes with the
+    ///   pinned formatter/compiler
     /// - **commit-msg**: Validates conventional commit format with mandatory
     ///   scope (e.g., `feat(api): add endpoint`)
     /// - **post-commit**: Verifies the commit is signed

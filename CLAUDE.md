@@ -14,7 +14,7 @@ Key features:
 - **Truly idempotent**: Never overwrites existing hook scripts
 - **No magic**: Just sets `core.hooksPath` in git config
 - **CI-aware**: Skips installation in CI environments
-- **Zero dependencies**: Pure Rust, no external crates
+- **Async filesystem access**: Uses async-fs-io and Tokio
 
 Published to crates.io at https://crates.io/crates/rhusky
 
@@ -26,11 +26,11 @@ cargo test                     # Run tests
 cargo install --path .         # Install locally
 
 # Formatting (requires nightly)
-cargo +nightly fmt --all -- --check   # Check
-cargo +nightly fmt --all              # Apply
+sh scripts/fmt.sh --check   # Check
+sh scripts/fmt.sh              # Apply
 
 # Linting (requires nightly)
-cargo +nightly clippy --all-targets --all-features -- -D warnings -W missing-docs
+cargo clippy --locked --all-targets --all-features -- -D warnings -W missing-docs
 ```
 
 ## Related projects
@@ -47,7 +47,7 @@ markdownlint, cocogitto, and git hooks.
 
 ## Code style
 
-- **Rust Edition**: 2024, MSRV 1.93.0
+- **Rust Edition**: 2024, MSRV 1.85.0
 - **Formatting**: Uses nightly rustfmt with vertical imports grouped
   by std/external/crate (see `rustfmt.toml`)
 - **Clippy**: Nightly with strict settings (max 120 lines/function,
@@ -67,7 +67,7 @@ Key design decisions:
 
 1. **Never overwrite hooks**: Only sets git config, never creates
    hook files (unlike Sloughi which creates default hooks)
-2. **Zero dependencies**: Pure Rust std library only
+2. **Async filesystem access**: Uses async-fs-io and Tokio
 3. **Builder pattern**: Fluent API with `hooks_dir()` and
    `skip_in_env()` methods
 
@@ -126,3 +126,10 @@ Skills are defined in `.claude/skills/` and can be invoked with
 - Use sentence case for headers (not Title Case)
 - Indent nested lists with 2 spaces
 - Surround lists and code blocks with blank lines
+
+## Maintenance
+
+CI is the sole publisher; see `.github/PUBLISH.md`. Generated default
+hooks require compiler and formatter pins and validate scoped commit
+headlines. Existing hooks are never overwritten. Runtime installation
+is asynchronous; build scripts use `install_from_build_script()`.
