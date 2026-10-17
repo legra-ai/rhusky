@@ -92,7 +92,7 @@ cargo clippy --locked --all-targets --all-features -- -D warnings || exit 1
 /// Validate the headline, never a later line in the commit body.
 const DEFAULT_COMMIT_MSG_HOOK: &str = r#"#!/bin/sh
 IFS= read -r headline < "$1" || exit 1
-if ! printf '%s\n' "$headline" | grep -Eq '^(feat|fix|build|chore|docs|style|ci|refactor|perf|test|revert)\([a-z0-9][a-z0-9./-]*\)!?: .+'; then
+if ! printf '%s\n' "$headline" | grep -Eq '^(feat|fix|build|chore|docs|style|ci|refactor|perf|test|revert)\([a-z0-9][a-z0-9./-]*\)!?: [^[:space:]](.*[^[:space:]])?$'; then
     printf 'Required: allowed-type(scope): description\n' >&2
     exit 1
 fi

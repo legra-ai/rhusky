@@ -51,6 +51,7 @@ async fn generated_hooks_require_pins_and_reject_invalid_headlines() {
     for (message, valid) in [
         ("fix(test): valid headline\n", true),
         ("oops(deps): invalid\n", false),
+        ("fix(test):    \n", false),
         ("fix: missing scope\n", false),
         ("invalid\n\nfix(deps): forged body\n", false),
     ] {
