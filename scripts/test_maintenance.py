@@ -11,7 +11,7 @@ class MaintenancePolicyTests(unittest.TestCase):
     def test_one_pinned_release_pipeline(self):
         workflow = (ROOT / '.github/workflows/ci.yml').read_text()
         self.assertRegex(workflow, r'cargo-maintenance.yml@[0-9a-f]{40}')
-        self.assertIn('policy-revision:', workflow)
+        self.assertNotIn('policy-revision:', workflow)
         self.assertIn('schedule:', workflow)
         self.assertIn('workflow_dispatch:', workflow)
         for path in (ROOT / '.github/workflows').glob('*.yml'):
