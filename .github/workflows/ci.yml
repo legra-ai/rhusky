@@ -9,9 +9,30 @@ on:
 permissions:
   contents: read
 jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: python3 -m unittest discover -s scripts -p 'test_*.py'
   ci:
-    uses: legra-ai/github-actions/.github/workflows/cargo-maintenance.yml@2ff75bbc66cc08064a55b97dd693ef60f4d9b95d
+    needs: prepare
+    uses: legra-ai/github-actions/.github/workflows/cargo-maintenance.yml@6ffed9570a616d63bc93d637c1fd20887a191371
     with:
       crate-name: rhusky
       kind: library
     secrets: inherit
+  test:
+    if: always()
+    needs: [prepare, ci]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require the complete shared pipeline
+        env:
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          CI_RESULT: ${{ needs.ci.result }}
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          if any(os.environ[name] != 'success' for name in ['PREPARE_RESULT', 'CI_RESULT']):
+              raise RuntimeError('Every required maintenance job must succeed')
+          PYTHON
