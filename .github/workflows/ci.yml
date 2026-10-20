@@ -16,7 +16,7 @@ jobs:
       - run: python3 -m unittest discover -s scripts -p 'test_*.py'
   ci:
     needs: prepare
-    uses: legra-ai/github-actions/.github/workflows/cargo-maintenance.yml@6ffed9570a616d63bc93d637c1fd20887a191371
+    uses: legra-ai/github-actions/.github/workflows/cargo-maintenance.yml@0d8d26076087886d4741bafd9c34d4066df34075
     with:
       crate-name: rhusky
       kind: library
