@@ -4,9 +4,9 @@ version = 4
 
 [[package]]
 name = "async-fs-io"
-version = "0.2.3"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9e93ad633a3724b47ab1d4e39924c7157240cebb686e42fff70902ad57115f4"
+checksum = "e6ce680f375cdb1379a8956e532db06ccca7d458fb7e9c86b7c2c0a5df514bc7"
 dependencies = [
  "fs2",
  "thiserror",
@@ -132,9 +132,9 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.4.34"
+version = "0.4.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
+checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
 name = "mio"
