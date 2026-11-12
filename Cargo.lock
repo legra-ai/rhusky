@@ -217,7 +217,7 @@ dependencies = [
 
 [[package]]
 name = "rhusky"
-version = "2.0.7"
+version = "2.0.8"
 dependencies = [
  "async-fs-io",
  "serial_test",
