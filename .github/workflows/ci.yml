@@ -17,7 +17,7 @@ jobs:
       - run: python3 -m unittest discover -s scripts -p 'test_*.py'
   ci:
     needs: prepare
-    uses: legra-ai/github-actions/.github/workflows/cargo-maintenance.yml@4821c86278ed3b0a7d9b51504a42b4b777863aa0
+    uses: legra-ai/github-actions/.github/workflows/cargo-maintenance.yml@a543ccfa7fa7b0e1af71a621cfa2e8fa52df7fae
     with:
       breaking-change-bump: minor
       crate-name: rhusky
